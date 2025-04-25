@@ -5,22 +5,79 @@ from PIL import Image
 import os
 import argparse
 import glob
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
 
-def clean_noise(input_image_path, output_image_path, output_pdf_path, 
-               noise_threshold=220, median_blur_size=5, 
+def detect_orientation(image):
+    """
+    檢測圖像方向並返回旋轉角度
+    
+    參數:
+    image: 輸入圖像
+    
+    返回:
+    rotation_angle: 旋轉角度 (0, 90, 180, 或 270)
+    """
+    # 獲取圖像尺寸
+    height, width = image.shape[:2]
+    
+    # 如果寬度大於高度，假設圖像需要旋轉
+    if width > height:
+        # 轉換為灰度圖
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) > 2 else image
+        
+        # 使用霍夫變換檢測直線
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=100, maxLineGap=10)
+        
+        if lines is not None:
+            # 計算水平和垂直線的數量
+            horizontal_lines = 0
+            vertical_lines = 0
+            
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+                
+                if angle < 45 or angle > 135:
+                    horizontal_lines += 1
+                else:
+                    vertical_lines += 1
+            
+            # 如果垂直線比水平線多，旋轉90度
+            if vertical_lines > horizontal_lines:
+                return 90
+            else:
+                return 0
+        else:
+            # 如果沒有檢測到線條，根據文字區域分布判斷
+            # 將圖像分為左右兩半，計算每半部分的文字像素數量
+            left_half = gray[:, :width//2]
+            right_half = gray[:, width//2:]
+            
+            left_text = np.sum(left_half < 128)
+            right_text = np.sum(right_half < 128)
+            
+            # 如果左半部分文字明顯多於右半部分，可能需要旋轉
+            if left_text > 2 * right_text:
+                return 180
+            elif right_text > 2 * left_text:
+                return 0
+    
+    # 默認不旋轉
+    return 0
+
+def clean_noise(input_image_path, output_image_path, 
+               noise_threshold=200, median_blur_size=5, 
                morph_kernel_size=1, morph_iterations=3,
-               contrast_alpha=1.0, contrast_beta=10,
-               sharpen_kernel_size=3, sharpen_strength=1.0,
-               ink_saving_mode=True, ink_threshold=245):
+               contrast_alpha=1.5, contrast_beta=15,
+               sharpen_kernel_size=3, sharpen_strength=2.0,
+               ink_saving_mode=True, ink_threshold=245,
+               auto_rotate=True):
     """
     清理圖像周圍的雜點，保留文字內容，並增強對比度
     
     參數:
     input_image_path: 輸入圖片路徑
     output_image_path: 輸出圖片路徑
-    output_pdf_path: 輸出PDF路徑
     noise_threshold: 雜訊閾值，越高越能保留淺色文字
     median_blur_size: 中值濾波器大小，用於去除椒鹽噪聲
     morph_kernel_size: 形態學操作的核大小
@@ -31,12 +88,25 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     sharpen_strength: 銳化強度
     ink_saving_mode: 是否啟用省墨模式
     ink_threshold: 省墨模式下的閾值，高於此值的像素將變為純白色
+    auto_rotate: 是否自動檢測並修正圖像方向
     """
     # 讀取圖片
     image = cv2.imread(input_image_path)
     if image is None:
         print(f"無法讀取圖片: {input_image_path}")
         return None
+    
+    # 自動旋轉圖像
+    if auto_rotate:
+        rotation_angle = detect_orientation(image)
+        if rotation_angle != 0:
+            print(f"檢測到圖像需要旋轉 {rotation_angle} 度")
+            if rotation_angle == 90:
+                image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation_angle == 180:
+                image = cv2.rotate(image, cv2.ROTATE_180)
+            elif rotation_angle == 270:
+                image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
     
     # 轉換為灰度圖
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -112,39 +182,15 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     # 保存為圖片
     cv2.imwrite(output_image_path, final_result)
     
-    # 創建PDF
-    img_pil = Image.fromarray(cv2.cvtColor(final_result, cv2.COLOR_BGR2RGB))
-    img_width, img_height = img_pil.size
-    
-    # 計算PDF頁面大小，保持圖像比例
-    pdf_w, pdf_h = letter
-    if img_width > img_height:
-        # 橫向圖像
-        pdf_w, pdf_h = pdf_h, pdf_w
-    
-    # 計算縮放比例，使圖像適合頁面並留有邊距
-    margin = 50
-    scale = min((pdf_w - 2*margin) / img_width, (pdf_h - 2*margin) / img_height)
-    new_width = img_width * scale
-    new_height = img_height * scale
-    
-    # 創建PDF
-    c = canvas.Canvas(output_pdf_path, pagesize=(pdf_w, pdf_h))
-    # 計算居中位置
-    x_centered = (pdf_w - new_width) / 2
-    y_centered = (pdf_h - new_height) / 2
-    # 在PDF中繪製圖像
-    c.drawImage(output_image_path, x_centered, y_centered, width=new_width, height=new_height)
-    c.save()
-    
     return final_result
 
 def process_folder(input_folder, output_folder, 
-                  noise_threshold=220, median_blur_size=5, 
+                  noise_threshold=200, median_blur_size=5, 
                   morph_kernel_size=1, morph_iterations=3,
-                  contrast_alpha=1.0, contrast_beta=10,
-                  sharpen_kernel_size=3, sharpen_strength=1.0,
+                  contrast_alpha=1.5, contrast_beta=15,
+                  sharpen_kernel_size=3, sharpen_strength=2.0,
                   ink_saving_mode=True, ink_threshold=245,
+                  auto_rotate=True,
                   show_results=False):
     """
     處理資料夾中的所有圖片
@@ -177,15 +223,13 @@ def process_folder(input_folder, output_folder,
         
         # 設定輸出路徑
         output_image_path = os.path.join(output_folder, f"{base_name}_clean.jpg")
-        output_pdf_path = os.path.join(output_folder, f"{base_name}_clean.pdf")
         
         print(f"處理圖片 {i+1}/{len(image_files)}: {image_file}")
         
         # 處理圖片
         result = clean_noise(
             image_file, 
-            output_image_path, 
-            output_pdf_path,
+            output_image_path,
             noise_threshold,
             median_blur_size,
             morph_kernel_size,
@@ -195,14 +239,15 @@ def process_folder(input_folder, output_folder,
             sharpen_kernel_size,
             sharpen_strength,
             ink_saving_mode,
-            ink_threshold
+            ink_threshold,
+            auto_rotate
         )
         
         if result is None:
             print(f"處理 {image_file} 失敗")
             continue
         
-        print(f"已保存處理結果為 {output_image_path} 和 {output_pdf_path}")
+        print(f"已保存處理結果為 {output_image_path}")
         
         # 顯示結果
         if show_results:
@@ -222,7 +267,7 @@ def main():
                         help='輸入圖片路徑或資料夾路徑')
     parser.add_argument('--output', type=str, default='output', 
                         help='輸出資料夾路徑')
-    parser.add_argument('--noise_threshold', type=int, default=220, 
+    parser.add_argument('--noise_threshold', type=int, default=200, 
                         help='雜訊閾值 (0-255)，越高越能保留淺色文字')
     parser.add_argument('--median_blur_size', type=int, default=5, 
                         help='中值濾波器大小，必須是奇數，用於去除椒鹽噪聲')
@@ -230,18 +275,20 @@ def main():
                         help='形態學操作的核大小，影響雜訊移除的強度')
     parser.add_argument('--morph_iterations', type=int, default=3, 
                         help='形態學操作的迭代次數，影響雜訊移除的強度')
-    parser.add_argument('--contrast_alpha', type=float, default=1.0, 
+    parser.add_argument('--contrast_alpha', type=float, default=1.5, 
                         help='對比度增強係數，大於1增加對比度')
-    parser.add_argument('--contrast_beta', type=int, default=10, 
+    parser.add_argument('--contrast_beta', type=int, default=15, 
                         help='亮度調整值，正值增加亮度')
     parser.add_argument('--sharpen_kernel_size', type=int, default=3, 
                         help='銳化核大小，設為0禁用銳化')
-    parser.add_argument('--sharpen_strength', type=float, default=1.0, 
+    parser.add_argument('--sharpen_strength', type=float, default=2.0, 
                         help='銳化強度，設為0禁用銳化')
     parser.add_argument('--ink_saving', action='store_true', default=True,
                         help='啟用省墨模式，將接近白色的像素轉換為純白色')
     parser.add_argument('--ink_threshold', type=int, default=245, 
                         help='省墨模式下的閾值 (0-255)，高於此值的像素將變為純白色')
+    parser.add_argument('--auto_rotate', action='store_true', default=True,
+                        help='自動檢測並修正圖像方向')
     parser.add_argument('--show', action='store_true', 
                         help='顯示處理結果')
     
@@ -263,6 +310,7 @@ def main():
             args.sharpen_strength,
             args.ink_saving,
             args.ink_threshold,
+            args.auto_rotate,
             args.show
         )
     else:
@@ -275,13 +323,11 @@ def main():
         
         # 設定輸出路徑
         output_image_path = os.path.join(args.output, f"{base_name}_clean.jpg")
-        output_pdf_path = os.path.join(args.output, f"{base_name}_clean.pdf")
         
         # 處理圖片
         result = clean_noise(
             args.input, 
-            output_image_path, 
-            output_pdf_path,
+            output_image_path,
             args.noise_threshold,
             args.median_blur_size,
             args.morph_kernel_size,
@@ -291,13 +337,14 @@ def main():
             args.sharpen_kernel_size,
             args.sharpen_strength,
             args.ink_saving,
-            args.ink_threshold
+            args.ink_threshold,
+            args.auto_rotate
         )
         
         if result is None:
             return
         
-        print(f"處理完成！結果已保存為 {output_image_path} 和 {output_pdf_path}")
+        print(f"處理完成！結果已保存為 {output_image_path}")
         
         # 顯示結果
         if args.show:
