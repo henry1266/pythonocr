@@ -5,7 +5,7 @@ import pytesseract
 from PIL import Image
 
 # 讀取圖片
-image = cv2.imread('input_image.jpg')  # 請替換為您的圖片路徑
+image = cv2.imread('1.jpg')  # 使用同資料夾中的1.jpg檔案
 
 # 轉換為灰度圖
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
