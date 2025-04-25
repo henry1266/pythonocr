@@ -11,7 +11,8 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
                noise_threshold=220, median_blur_size=5, 
                morph_kernel_size=1, morph_iterations=3,
                contrast_alpha=1.3, contrast_beta=10,
-               sharpen_kernel_size=3, sharpen_strength=1.5):
+               sharpen_kernel_size=3, sharpen_strength=1.5,
+               ink_saving_mode=False, ink_threshold=245):
     """
     清理圖像周圍的雜點，保留文字內容，並增強對比度
     
@@ -27,6 +28,8 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     contrast_beta: 亮度調整值，正值增加亮度
     sharpen_kernel_size: 銳化核大小
     sharpen_strength: 銳化強度
+    ink_saving_mode: 是否啟用省墨模式
+    ink_threshold: 省墨模式下的閾值，高於此值的像素將變為純白色
     """
     # 讀取圖片
     image = cv2.imread(input_image_path)
@@ -90,6 +93,21 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
         if stats[i, cv2.CC_STAT_AREA] >= min_size:
             final_result[labels == i] = enhanced[labels == i]
     
+    # 省墨模式：將接近白色的像素轉換為純白色
+    if ink_saving_mode:
+        # 轉換為灰度圖
+        final_gray = cv2.cvtColor(final_result, cv2.COLOR_BGR2GRAY)
+        
+        # 創建遮罩，標記所有高於閾值的像素
+        ink_mask = final_gray > ink_threshold
+        
+        # 將這些像素設為純白色
+        final_result[ink_mask] = [255, 255, 255]
+        
+        # 進行二值化處理，使文字更加黑白分明
+        for c in range(3):  # 對每個顏色通道
+            _, final_result[:,:,c] = cv2.threshold(final_result[:,:,c], ink_threshold, 255, cv2.THRESH_BINARY)
+    
     # 保存為圖片
     cv2.imwrite(output_image_path, final_result)
     
@@ -142,6 +160,10 @@ def main():
                         help='銳化核大小，設為0禁用銳化')
     parser.add_argument('--sharpen_strength', type=float, default=1.5, 
                         help='銳化強度，設為0禁用銳化')
+    parser.add_argument('--ink_saving', action='store_true', 
+                        help='啟用省墨模式，將接近白色的像素轉換為純白色')
+    parser.add_argument('--ink_threshold', type=int, default=245, 
+                        help='省墨模式下的閾值 (0-255)，高於此值的像素將變為純白色')
     parser.add_argument('--show', action='store_true', help='顯示處理結果')
     
     args = parser.parse_args()
@@ -158,7 +180,9 @@ def main():
         args.contrast_alpha,
         args.contrast_beta,
         args.sharpen_kernel_size,
-        args.sharpen_strength
+        args.sharpen_strength,
+        args.ink_saving,
+        args.ink_threshold
     )
     
     if result is None:
@@ -174,6 +198,8 @@ def main():
         plt.show()
     
     print(f"處理完成！結果已保存為 {args.output_image} 和 {args.output_pdf}")
+    if args.ink_saving:
+        print("已啟用省墨模式，背景區域將不使用墨水。")
 
 if __name__ == "__main__":
     main()
