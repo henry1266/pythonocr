@@ -9,7 +9,7 @@ import argparse
 
 def process_image(input_image_path, threshold=240, min_area=5, kernel_size=2, iterations=1):
     """
-    處理圖片，保留文字區域並輸出為白色背景的圖片和PDF
+    處理圖片，保留文字區域並移除非文字元素
     
     參數:
     input_image_path: 輸入圖片路徑
@@ -44,7 +44,15 @@ def process_image(input_image_path, threshold=240, min_area=5, kernel_size=2, it
     for contour in contours:
         # 只過濾非常小的雜訊
         if cv2.contourArea(contour) > min_area:
-            cv2.drawContours(mask, [contour], -1, 255, -1)
+            # 獲取輪廓的邊界框
+            x, y, w, h = cv2.boundingRect(contour)
+            # 計算寬高比
+            aspect_ratio = float(w) / h if h > 0 else 0
+            
+            # 過濾掉可能是框線或大區域的輪廓
+            # 文字通常有合理的寬高比和面積
+            if aspect_ratio < 20 and aspect_ratio > 0.05 and cv2.contourArea(contour) < 10000:
+                cv2.drawContours(mask, [contour], -1, 255, -1)
     
     # 將非文字區域補為白色背景
     white_bg = np.ones_like(image) * 255
@@ -98,7 +106,7 @@ def save_output(result_image, output_image_path, output_pdf_path):
 
 def main():
     # 設定命令行參數
-    parser = argparse.ArgumentParser(description='處理圖片，保留文字區域並輸出為白色背景的圖片和PDF')
+    parser = argparse.ArgumentParser(description='處理圖片，保留文字區域並移除非文字元素')
     parser.add_argument('--input', type=str, default='1.jpg', help='輸入圖片路徑')
     parser.add_argument('--threshold', type=int, default=240, help='二值化閾值 (0-255)，越高越能檢測淺色文字')
     parser.add_argument('--min_area', type=int, default=5, help='最小文字區域面積，越小越能保留小文字')
