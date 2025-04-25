@@ -9,9 +9,11 @@ from reportlab.lib.pagesizes import letter
 
 def clean_noise(input_image_path, output_image_path, output_pdf_path, 
                noise_threshold=220, median_blur_size=5, 
-               morph_kernel_size=3, morph_iterations=2):
+               morph_kernel_size=1, morph_iterations=3,
+               contrast_alpha=1.3, contrast_beta=10,
+               sharpen_kernel_size=3, sharpen_strength=1.5):
     """
-    清理圖像周圍的雜點，保留文字內容
+    清理圖像周圍的雜點，保留文字內容，並增強對比度
     
     參數:
     input_image_path: 輸入圖片路徑
@@ -21,6 +23,10 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     median_blur_size: 中值濾波器大小，用於去除椒鹽噪聲
     morph_kernel_size: 形態學操作的核大小
     morph_iterations: 形態學操作的迭代次數
+    contrast_alpha: 對比度增強係數，大於1增加對比度
+    contrast_beta: 亮度調整值，正值增加亮度
+    sharpen_kernel_size: 銳化核大小
+    sharpen_strength: 銳化強度
     """
     # 讀取圖片
     image = cv2.imread(input_image_path)
@@ -56,11 +62,39 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     # 注意：這裡我們將二值圖像反轉，因為我們想要保留黑色文字區域
     result = np.where(mask == 0, image, white_bg)
     
+    # 增強對比度
+    enhanced = cv2.convertScaleAbs(result, alpha=contrast_alpha, beta=contrast_beta)
+    
+    # 銳化處理，使文字更清晰
+    if sharpen_kernel_size > 0 and sharpen_strength > 0:
+        # 創建銳化核
+        sharpen_kernel = np.array([[-1, -1, -1],
+                                  [-1, 9 + sharpen_strength, -1],
+                                  [-1, -1, -1]])
+        # 應用銳化
+        enhanced = cv2.filter2D(enhanced, -1, sharpen_kernel)
+    
+    # 進行額外的雜點清理
+    enhanced_gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+    _, enhanced_binary = cv2.threshold(enhanced_gray, noise_threshold, 255, cv2.THRESH_BINARY)
+    
+    # 使用連通區域分析移除小雜點
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(255 - enhanced_binary, connectivity=8)
+    
+    # 創建輸出圖像
+    final_result = np.ones_like(enhanced) * 255
+    
+    # 只保留足夠大的連通區域（文字）
+    min_size = 10  # 最小連通區域大小
+    for i in range(1, num_labels):  # 從1開始，跳過背景
+        if stats[i, cv2.CC_STAT_AREA] >= min_size:
+            final_result[labels == i] = enhanced[labels == i]
+    
     # 保存為圖片
-    cv2.imwrite(output_image_path, result)
+    cv2.imwrite(output_image_path, final_result)
     
     # 創建PDF
-    img_pil = Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    img_pil = Image.fromarray(cv2.cvtColor(final_result, cv2.COLOR_BGR2RGB))
     img_width, img_height = img_pil.size
     
     # 計算PDF頁面大小，保持圖像比例
@@ -84,11 +118,11 @@ def clean_noise(input_image_path, output_image_path, output_pdf_path,
     c.drawImage(output_image_path, x_centered, y_centered, width=new_width, height=new_height)
     c.save()
     
-    return result
+    return final_result
 
 def main():
     # 設定命令行參數
-    parser = argparse.ArgumentParser(description='清理圖像周圍的雜點，保留文字內容')
+    parser = argparse.ArgumentParser(description='清理圖像周圍的雜點，保留文字內容，並增強對比度')
     parser.add_argument('--input', type=str, default='1.jpg', help='輸入圖片路徑')
     parser.add_argument('--output_image', type=str, default='clean_text.jpg', help='輸出圖片路徑')
     parser.add_argument('--output_pdf', type=str, default='clean_text.pdf', help='輸出PDF路徑')
@@ -96,10 +130,18 @@ def main():
                         help='雜訊閾值 (0-255)，越高越能保留淺色文字')
     parser.add_argument('--median_blur_size', type=int, default=5, 
                         help='中值濾波器大小，必須是奇數，用於去除椒鹽噪聲')
-    parser.add_argument('--morph_kernel_size', type=int, default=3, 
+    parser.add_argument('--morph_kernel_size', type=int, default=1, 
                         help='形態學操作的核大小，影響雜訊移除的強度')
-    parser.add_argument('--morph_iterations', type=int, default=2, 
+    parser.add_argument('--morph_iterations', type=int, default=3, 
                         help='形態學操作的迭代次數，影響雜訊移除的強度')
+    parser.add_argument('--contrast_alpha', type=float, default=1.3, 
+                        help='對比度增強係數，大於1增加對比度')
+    parser.add_argument('--contrast_beta', type=int, default=10, 
+                        help='亮度調整值，正值增加亮度')
+    parser.add_argument('--sharpen_kernel_size', type=int, default=3, 
+                        help='銳化核大小，設為0禁用銳化')
+    parser.add_argument('--sharpen_strength', type=float, default=1.5, 
+                        help='銳化強度，設為0禁用銳化')
     parser.add_argument('--show', action='store_true', help='顯示處理結果')
     
     args = parser.parse_args()
@@ -112,7 +154,11 @@ def main():
         args.noise_threshold,
         args.median_blur_size,
         args.morph_kernel_size,
-        args.morph_iterations
+        args.morph_iterations,
+        args.contrast_alpha,
+        args.contrast_beta,
+        args.sharpen_kernel_size,
+        args.sharpen_strength
     )
     
     if result is None:
@@ -124,7 +170,7 @@ def main():
         plt.figure(figsize=(12, 10))
         plt.imshow(result_rgb)
         plt.axis('off')
-        plt.title('Cleaned Text Image')
+        plt.title('Cleaned Text Image with Enhanced Contrast')
         plt.show()
     
     print(f"處理完成！結果已保存為 {args.output_image} 和 {args.output_pdf}")
