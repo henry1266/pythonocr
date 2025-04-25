@@ -7,82 +7,59 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import argparse
 
-def process_image(input_image_path, threshold=240, min_area=5, max_area=50000, 
-                 min_aspect_ratio=0.01, max_aspect_ratio=50, kernel_size=2, iterations=1):
+def process_image(input_image_path, output_image_path, output_pdf_path, 
+                 method='canny', canny_low=50, canny_high=150, 
+                 adaptive_block_size=11, adaptive_c=2):
     """
     處理圖片，保留文字區域並移除非文字元素
     
     參數:
     input_image_path: 輸入圖片路徑
-    threshold: 二值化閾值 (0-255)，越高越能檢測淺色文字
-    min_area: 最小文字區域面積，越小越能保留小文字
-    max_area: 最大文字區域面積，用於過濾大型非文字元素
-    min_aspect_ratio: 最小寬高比，用於過濾非文字元素
-    max_aspect_ratio: 最大寬高比，用於過濾非文字元素
-    kernel_size: 形態學操作的核大小，影響文字連接程度
-    iterations: 膨脹操作的迭代次數，影響文字連接程度
+    output_image_path: 輸出圖片路徑
+    output_pdf_path: 輸出PDF路徑
+    method: 文字檢測方法，'canny'或'adaptive'
+    canny_low: Canny邊緣檢測的低閾值
+    canny_high: Canny邊緣檢測的高閾值
+    adaptive_block_size: 自適應閾值的塊大小
+    adaptive_c: 自適應閾值的常數
     """
     # 讀取圖片
     image = cv2.imread(input_image_path)
     if image is None:
         print(f"無法讀取圖片: {input_image_path}")
-        return None, None
+        return None
     
     # 轉換為灰度圖
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # 使用較高的閾值進行二值化，確保淺色文字也能被檢測到
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
-    
-    # 使用形態學操作來連接相近的文字
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    dilated = cv2.dilate(binary, kernel, iterations=iterations)
-    
-    # 尋找所有可能的文字區域
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # 創建遮罩
-    mask = np.zeros_like(gray)
-    
-    # 在遮罩上繪製所有可能的文字區域，使用較寬鬆的過濾條件
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        # 過濾非常小的雜訊
-        if area > min_area and area < max_area:
-            # 獲取輪廓的邊界框
-            x, y, w, h = cv2.boundingRect(contour)
-            # 計算寬高比
-            aspect_ratio = float(w) / h if h > 0 else 0
-            
-            # 使用較寬鬆的條件過濾
-            if aspect_ratio > min_aspect_ratio and aspect_ratio < max_aspect_ratio:
-                cv2.drawContours(mask, [contour], -1, 255, -1)
-    
-    # 將非文字區域補為白色背景
+    # 創建白色背景
     white_bg = np.ones_like(image) * 255
+    
+    # 根據選擇的方法處理圖片
+    if method == 'canny':
+        # 使用Canny邊緣檢測
+        edges = cv2.Canny(gray, canny_low, canny_high)
+        # 膨脹邊緣以連接相近的文字
+        kernel = np.ones((3, 3), np.uint8)
+        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+        # 將邊緣區域視為文字
+        mask = dilated_edges
+    else:  # 'adaptive'
+        # 使用自適應閾值處理
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                      cv2.THRESH_BINARY_INV, adaptive_block_size, adaptive_c)
+        # 膨脹以連接相近的文字
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.dilate(binary, kernel, iterations=1)
     
     # 將原始影像的文字區塊貼到白色背景上
     result_on_white = np.where(mask[:, :, np.newaxis] == 255, image, white_bg)
     
-    # 轉換為 RGB 以供顯示
-    result_rgb_white_bg = cv2.cvtColor(result_on_white.astype(np.uint8), cv2.COLOR_BGR2RGB)
-    
-    return result_on_white, result_rgb_white_bg
-
-def save_output(result_image, output_image_path, output_pdf_path):
-    """
-    保存處理後的圖片為JPG和PDF
-    
-    參數:
-    result_image: 處理後的圖片
-    output_image_path: 輸出JPG路徑
-    output_pdf_path: 輸出PDF路徑
-    """
     # 保存為圖片
-    cv2.imwrite(output_image_path, result_image)
+    cv2.imwrite(output_image_path, result_on_white)
     
     # 創建PDF
-    img_pil = Image.fromarray(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+    img_pil = Image.fromarray(cv2.cvtColor(result_on_white, cv2.COLOR_BGR2RGB))
     img_width, img_height = img_pil.size
     
     # 計算PDF頁面大小，保持圖像比例
@@ -106,56 +83,49 @@ def save_output(result_image, output_image_path, output_pdf_path):
     c.drawImage(output_image_path, x_centered, y_centered, width=new_width, height=new_height)
     c.save()
     
-    return output_image_path, output_pdf_path
+    return result_on_white
 
 def main():
     # 設定命令行參數
     parser = argparse.ArgumentParser(description='處理圖片，保留文字區域並移除非文字元素')
     parser.add_argument('--input', type=str, default='1.jpg', help='輸入圖片路徑')
-    parser.add_argument('--threshold', type=int, default=240, help='二值化閾值 (0-255)，越高越能檢測淺色文字')
-    parser.add_argument('--min_area', type=int, default=5, help='最小文字區域面積，越小越能保留小文字')
-    parser.add_argument('--max_area', type=int, default=50000, help='最大文字區域面積，用於過濾大型非文字元素')
-    parser.add_argument('--min_aspect_ratio', type=float, default=0.01, help='最小寬高比，用於過濾非文字元素')
-    parser.add_argument('--max_aspect_ratio', type=float, default=50, help='最大寬高比，用於過濾非文字元素')
-    parser.add_argument('--kernel_size', type=int, default=2, help='形態學操作的核大小，影響文字連接程度')
-    parser.add_argument('--iterations', type=int, default=1, help='膨脹操作的迭代次數，影響文字連接程度')
     parser.add_argument('--output_image', type=str, default='text_on_white_bg.jpg', help='輸出圖片路徑')
     parser.add_argument('--output_pdf', type=str, default='text_output.pdf', help='輸出PDF路徑')
+    parser.add_argument('--method', type=str, choices=['canny', 'adaptive'], default='adaptive', 
+                        help='文字檢測方法: canny或adaptive')
+    parser.add_argument('--canny_low', type=int, default=50, help='Canny邊緣檢測的低閾值')
+    parser.add_argument('--canny_high', type=int, default=150, help='Canny邊緣檢測的高閾值')
+    parser.add_argument('--adaptive_block_size', type=int, default=11, help='自適應閾值的塊大小')
+    parser.add_argument('--adaptive_c', type=int, default=2, help='自適應閾值的常數')
     parser.add_argument('--show', action='store_true', help='顯示處理結果')
     
     args = parser.parse_args()
     
     # 處理圖片
-    result_on_white, result_rgb_white_bg = process_image(
+    result = process_image(
         args.input, 
-        args.threshold, 
-        args.min_area,
-        args.max_area,
-        args.min_aspect_ratio,
-        args.max_aspect_ratio,
-        args.kernel_size, 
-        args.iterations
-    )
-    
-    if result_on_white is None:
-        return
-    
-    # 保存結果
-    output_image_path, output_pdf_path = save_output(
-        result_on_white, 
         args.output_image, 
-        args.output_pdf
+        args.output_pdf,
+        args.method,
+        args.canny_low,
+        args.canny_high,
+        args.adaptive_block_size,
+        args.adaptive_c
     )
+    
+    if result is None:
+        return
     
     # 顯示結果
     if args.show:
+        result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
         plt.figure(figsize=(12, 10))
-        plt.imshow(result_rgb_white_bg)
+        plt.imshow(result_rgb)
         plt.axis('off')
         plt.title('Text Regions on White Background')
         plt.show()
     
-    print(f"處理完成！結果已保存為 {output_image_path} 和 {output_pdf_path}")
+    print(f"處理完成！結果已保存為 {args.output_image} 和 {args.output_pdf}")
 
 if __name__ == "__main__":
     main()
