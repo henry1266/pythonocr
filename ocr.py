@@ -7,7 +7,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import argparse
 
-def process_image(input_image_path, threshold=240, min_area=5, kernel_size=2, iterations=1):
+def process_image(input_image_path, threshold=240, min_area=5, max_area=50000, 
+                 min_aspect_ratio=0.01, max_aspect_ratio=50, kernel_size=2, iterations=1):
     """
     處理圖片，保留文字區域並移除非文字元素
     
@@ -15,6 +16,9 @@ def process_image(input_image_path, threshold=240, min_area=5, kernel_size=2, it
     input_image_path: 輸入圖片路徑
     threshold: 二值化閾值 (0-255)，越高越能檢測淺色文字
     min_area: 最小文字區域面積，越小越能保留小文字
+    max_area: 最大文字區域面積，用於過濾大型非文字元素
+    min_aspect_ratio: 最小寬高比，用於過濾非文字元素
+    max_aspect_ratio: 最大寬高比，用於過濾非文字元素
     kernel_size: 形態學操作的核大小，影響文字連接程度
     iterations: 膨脹操作的迭代次數，影響文字連接程度
     """
@@ -40,18 +44,18 @@ def process_image(input_image_path, threshold=240, min_area=5, kernel_size=2, it
     # 創建遮罩
     mask = np.zeros_like(gray)
     
-    # 在遮罩上繪製所有可能的文字區域，使用非常保守的過濾
+    # 在遮罩上繪製所有可能的文字區域，使用較寬鬆的過濾條件
     for contour in contours:
-        # 只過濾非常小的雜訊
-        if cv2.contourArea(contour) > min_area:
+        area = cv2.contourArea(contour)
+        # 過濾非常小的雜訊
+        if area > min_area and area < max_area:
             # 獲取輪廓的邊界框
             x, y, w, h = cv2.boundingRect(contour)
             # 計算寬高比
             aspect_ratio = float(w) / h if h > 0 else 0
             
-            # 過濾掉可能是框線或大區域的輪廓
-            # 文字通常有合理的寬高比和面積
-            if aspect_ratio < 20 and aspect_ratio > 0.05 and cv2.contourArea(contour) < 10000:
+            # 使用較寬鬆的條件過濾
+            if aspect_ratio > min_aspect_ratio and aspect_ratio < max_aspect_ratio:
                 cv2.drawContours(mask, [contour], -1, 255, -1)
     
     # 將非文字區域補為白色背景
@@ -110,6 +114,9 @@ def main():
     parser.add_argument('--input', type=str, default='1.jpg', help='輸入圖片路徑')
     parser.add_argument('--threshold', type=int, default=240, help='二值化閾值 (0-255)，越高越能檢測淺色文字')
     parser.add_argument('--min_area', type=int, default=5, help='最小文字區域面積，越小越能保留小文字')
+    parser.add_argument('--max_area', type=int, default=50000, help='最大文字區域面積，用於過濾大型非文字元素')
+    parser.add_argument('--min_aspect_ratio', type=float, default=0.01, help='最小寬高比，用於過濾非文字元素')
+    parser.add_argument('--max_aspect_ratio', type=float, default=50, help='最大寬高比，用於過濾非文字元素')
     parser.add_argument('--kernel_size', type=int, default=2, help='形態學操作的核大小，影響文字連接程度')
     parser.add_argument('--iterations', type=int, default=1, help='膨脹操作的迭代次數，影響文字連接程度')
     parser.add_argument('--output_image', type=str, default='text_on_white_bg.jpg', help='輸出圖片路徑')
@@ -122,7 +129,10 @@ def main():
     result_on_white, result_rgb_white_bg = process_image(
         args.input, 
         args.threshold, 
-        args.min_area, 
+        args.min_area,
+        args.max_area,
+        args.min_aspect_ratio,
+        args.max_aspect_ratio,
         args.kernel_size, 
         args.iterations
     )
